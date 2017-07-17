@@ -1,0 +1,1320 @@
+---
+title: "Prosper Loan Exploration"
+output:
+  html_document:
+    theme: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r, echo=FALSE}
+# Read data
+loans <- read.csv(
+  '~/DAND/P4/ProsperLoanProject/ProsperLoanEDA/data/prosperLoanData.csv')
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load Libraries
+library(tidyverse)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(GGally)
+```
+
+## Univariate Exploration
+
+
+```{r, echo=FALSE}
+dim(loans)
+```
+
+Taking a peak at the dimensions of the data we can see that this dataset has many (81) variables. I used a list of these variables to create a shorter set of variables of interest to explore. There are 113,937 observations (which makes it worrisome that the variable loan key is a factor with only 113066 levels!) Let's explore that after seeing a summary of the dataset.
+
+
+```{r, echo=FALSE}
+columns_of_interest = c('ListingKey', 
+                        'Term', 
+                        'LoanStatus', 
+                        'BorrowerAPR',
+                        'BorrowerRate', 
+                        'LenderYield', 
+                        'EstimatedEffectiveYield',
+                        'ProsperScore',
+                        'ListingCategory..numeric.',
+                        'BorrowerState',
+                        'Occupation',
+                        'EmploymentStatus',
+                        'EmploymentStatusDuration',
+                        'CreditScoreRangeLower',
+                        'CreditScoreRangeUpper',
+                        'IncomeRange',
+                        'IncomeVerifiable',
+                        'LoanOriginalAmount',
+                        'MonthlyLoanPayment')
+
+loans %>% 
+  select(one_of(columns_of_interest)) %>%
+  summary()
+```
+
+This gives us all sorts of information there at a glance. We get to see an overview of ranges, maximums and counts. Large inconsistencies can be spotted at this stage, but it is a lot to take in at once, so let's dive into the individual variables I singled out interesting.  
+
+I also chose to convert Prosper Score and Term into factors.
+
+```{r}
+loans$ProsperScore <- factor(loans$ProsperScore)
+loans$Term <- factor(loans$Term)
+```
+
+
+## Listing Key
+
+Number of listing keys: 
+```{r, echo=FALSE}
+length(loans$ListingKey)
+```
+
+Number of unique listing keys: 
+```{r, echo=FALSE}
+length(unique(loans$ListingKey))
+```
+
+Here I wanted to see if the listing keys, which are supposed to be unique identifiers, really were unique. It seems like a lot of them are not.
+
+```{r, echo=FALSE}
+loans %>%
+  select(ListingKey) %>%
+  group_by(ListingKey) %>%
+  summarise(times_listing_key_appears = n()) %>%
+  group_by(times_listing_key_appears) %>%
+  summarise(count = n()) %>%
+  kable(format = 'html') %>%
+  kable_styling(full_width = F)
+```
+
+So we can see that many of the keys appear multiple times, with one loan appearing a whopping six times. Let's see that loan.
+
+
+```{r, echo=FALSE}
+loans %>%
+  filter(ListingKey == '17A93590655669644DB4C06') %>%
+  kable()
+```
+
+It seems this loan is just repeated in the dataset 6 times. Here I run a function to see if any of the columns contains values that aren't exact duplicates.
+
+
+```{r, echo=FALSE}
+multiple_values <- loans %>%
+  filter(ListingKey == '17A93590655669644DB4C06') %>%
+  apply(2, unique) %>%
+  lengths
+
+#This gets the column name where there are multiple values in a grouped column.
+names(multiple_values[multiple_values > 1])
+```
+
+There it is, this loan somehow as 6 different ProsperScores. Let's see if ProsperScore is the only non-duplicated value in *all* of the other repeated loans.
+
+
+```{r, echo=FALSE}
+#Create vector of the duplicate keys.
+duplicate_keys <- loans %>% 
+  group_by(ListingKey) %>%
+  summarise(count = n()) %>%
+  filter(count > 1) %>%
+  select(ListingKey)
+```
+It seems that it is. Are these Prosper Scores distributed in a predictable manner?
+
+```{r, echo=FALSE}
+duplicate_loans <- loans %>% filter(ListingKey %in% duplicate_keys[[1]])
+#Count distinct values in each column by key. 
+value_count <- aggregate(duplicate_loans, 
+                         list(duplicate_loans$ListingKey), 
+                         n_distinct)
+#Note: loans could repeat same value, but that is fine to me.
+```
+
+
+```{r, echo=FALSE}
+value_count_long <- stack(value_count, select=names(value_count[-1]))
+value_count_long %>% filter(values > 2) %>% select(ind) %>% unique
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+duplicate_loans %>%
+head(40) %>%
+ggplot(aes(ListingKey, ProsperScore, group=ListingKey)) + 
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Taking a look at just a few loans we can see that the spread isn't always the same between ProsperScores with the same listing ID. Because there doesn't seem to be a pattern here I elected to eliminate all duplicate rows from my dataset 
+
+
+```{r, echo=FALSE}
+#Eliminate duplicate rows.
+#Necessary Clean
+loans <- loans %>% filter(!ListingKey %in% duplicate_keys[[1]])
+```
+
+
+```{r, echo=FALSE}
+print('Number of listing keys: ')
+length(loans$ListingKey)
+print('Number of unique listing keys: ')
+length(unique(loans$ListingKey))
+```
+
+Now we're cooking with gas.
+
+## Term
+
+```{r, echo=FALSE}
+summary(loans$Term) 
+```
+
+Seems like the minimum loan term is a year, but the mean is 40.83 months, a little over 3 years.
+
+
+```{r, echo=FALSE}
+# Plot Term frequency in years.
+ggplot(loans, aes(Term)) + geom_bar() + xlab("Term In Years")
+```
+
+Here we can see that term is discrete, and that 3 year loans far outpace 5 year loans, with 1 year loans coming in a distant third.
+
+
+```{r, echo=FALSE}
+loans %>%
+    group_by(Term) %>%
+    summarise(count_per_term = n()) %>%
+    mutate(percentage = count_per_term / sum(count_per_term) * 100)
+```
+
+Here is the same information in a table with percentages.
+
+## Loan Status 
+
+
+```{r, echo=FALSE}
+summary(loans$LoanStatus)
+```
+
+
+```{r, echo=FALSE}
+#clean
+loans$LoanStatus <- 
+  factor(loans$LoanStatus, 
+         levels = c('Cancelled',
+                    'Defaulted',
+                    'Chargedoff',
+                    'Completed',
+                    'Current', 
+                    'FinalPaymentInProgress',
+                    'Past Due (1-15 days)',
+                    'Past Due (16-30 days)',
+                    'Past Due (31-60 days)',
+                    'Past Due (61-90 days)',
+                    'Past Due (91-120 days)',
+                    'Past Due (>120 days)'
+                                                         ))
+```
+
+I don't like that Past Due > 120 is out of order with the other past dues, so I changed the order of the levels. 
+
+A quick note on definitions via Investopedia.com --
+>Chargedoff :  "A charge-off or chargeoff is the declaration by a creditor (usually a credit card account) that an amount of debt is unlikely to be collected. This occurs when a consumer becomes severely delinquent on a debt. Traditionally, creditors will make this declaration at the point of six months without payment."  
+  
+>Default :  "Default is the failure to pay interest or principal on a loan or security when due. Default occurs when a debtor is unable to meet the legal obligation of debt repayment ... When an individual, a business or even a nation defaults on a debt obligation, the lender or investor has some recourse to reclaim the funds, but it varies based on the type of security involved.
+
+```{r, echo=FALSE}
+ggplot(loans, aes(LoanStatus)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Happily, the majority of the loans are either current or completed. If we were creating a model for this data it would likely be to predict if a new loan was going to become charged-off, defaulted, or past due. Cancelled, as we can see from our table, has just 5 loans. 
+
+```{r, echo=FALSE}
+#Plot the distribution of Past Due Loans
+on_time_loans <- c('Cancelled', 'Completed', 'Chargedoff', 'Current','Defaulted','FinalPaymentInProgress')
+
+loans %>%
+filter(!LoanStatus %in% on_time_loans) %>%
+ggplot(aes(LoanStatus)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#adjusting x label source :
+#http://tallman-world.tumblr.com/post/89964965867/rhow-to-rotate-axis-labels-in-ggplot2
+```
+
+Here we look at the distribution of Past Due loans.  
+It seems that most loans that are past due are only 1-15 days past Due. This suggests that many of these loans are will become current again. I'm not sure if loans need to go through the whole 120 days of being past due before the default or become charged off. It is also worth noting that some of the bins here are larger than others, making the graph slightly misleading. (First two are 15 days, next three are 30.) 
+
+Since there are just 5 cancelled loans, let's examine them.
+
+
+```{r, echo=FALSE}
+loans %>%
+  select(one_of(columns_of_interest)) %>%
+  filter(LoanStatus == 'Cancelled') 
+```
+
+Seems that these are loans that started to be funded and then were cancelled. There are only 5 of them, and they all seem to have been closed less than a month after creation.
+
+
+```{r, echo=FALSE}
+#Add a new, simplified LoanStatus column called simple.LoanStatus to loans df
+loans <- loans %>% 
+  mutate(simple.LoanStatus = ifelse(str_detect(LoanStatus, "Past"),
+                                    'Past Due', 
+                                    as.character(LoanStatus))) 
+```
+
+```{r, echo=FALSE}
+loans %>%
+  filter(!str_detect(simple.LoanStatus, "Final")) %>%
+  filter(simple.LoanStatus != "Cancelled") %>%
+  ggplot(aes(simple.LoanStatus)) + geom_bar()
+```
+
+Our original LoanStatus bar chart had a bit too much going on, so above I have simplified it. This chart gives us a better idea of how many loans are past due.  
+
+These LoanStatus' are intersting, but a lot depends on the data. Is this a snapshot of a month, a year? If this was for all time Completed and Defaulted will eventually become a huge part of the mix as the amount of loan history outpaces loans being originated. This distribution makes me think that it is a snapshot of a certain time frame.
+
+## Borrower APR
+
+
+```{r, echo=FALSE}
+summary(loans$BorrowerAPR)
+```
+
+The Borrower APR is interesting to me in several ways. First off, there are people with incredible deals and terrible deals. Our minimum is .6% - that's a pretty great rate. I don't know anyone getting a rate that rate cheap outside of the Fed. On the other end, there is a borrower paying 51% APR. Yikes. What I'm starting to like about this dataset is you can begin to see where the line is set for risk. Prosper, or their lending partners, thinks there is a positive return on someone so risky you need to charge them over half the principal per year to loan it. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(loans, aes(BorrowerAPR)) + geom_histogram(bins=125)
+```
+
+Several interesting things there. First off it's almost a normal distribution with an average around 20%, but it seems to have  spikes near round APR's, as well as a spike a bit under 30%. There is also a large spike at around 35%. This histogram is a little noisy, so let's look at a density plot.
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(BorrowerAPR)) + geom_density() 
+```
+
+The peaks are easier to see with a density plot. But it is easy to see that a large amount of loans hover around 20% APR.
+
+```{r}
+ggplot(loans, aes(x = 1, y = BorrowerAPR)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = 0.475, linetype="dashed")
+```
+
+It seems that a couple of datapoints at the top of the range could be considered outliers. Let's see how many.  
+
+```{r}
+loans %>%
+  filter(BorrowerAPR > 0.475) %>%
+  summarise(count=n())
+
+loans %>%
+  filter(BorrowerAPR > 0.475)
+```
+
+Just because they're outliers doesn't mean they're not valid. There are three loans with extremely high Borrower APR, and it seems that one of them was paid off and two defaulted. 
+They were all made in Q1 2006 and were for \$1,500 and \$3,000. I wonder if this was a quirk that was later worked out? 
+
+
+## BorrowerRate 
+
+
+```{r, echo=FALSE}
+summary(loans$BorrowerRate)
+```
+
+Here we notice that the rate is NOT the same thing as the APR. Looking at the definitions document we're simply told that the APR is the Annual Percentage Rate and that the Borrow's Rate is the borrower's interest rate for the loan. Some research tells us that these are calculated by (from Investopedia):   
+
+>APR - Annual Percentage Rate. A percentage that represents the actual yearly cost of funds over the term of the loan. Includes additional costs or fees but does not take compounding into account.  
+
+>Interest Rate - Refers only to the interst charged on the loan, doesn't take other expenses into acount. Therefore, APR tends to be higher than the loan's nominal interst rate. 
+
+>APY or EAR - Annual Percentage Yield or Effective Annual Rate takes compound interest into account. Tends to be larger than APR on the same loan.
+
+From researching the issue it seems that APR can be misleading when it comes to actual cost, and is best used when the loan is long-term, otherwise it does not account properly for costs and fees. However, for our purposes it is probably a good way to measure what a borrower is being charged.
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(BorrowerRate)) + geom_histogram(bins = 125)
+```
+
+```{r}
+ggplot(loans, aes(x = 1, y = BorrowerRate)) +
+  geom_boxplot()
+```
+
+Looks like the same 3 outliers from BorrowerAPR on the high end here. 
+
+## Estimated Effective Yield
+
+
+```{r, echo=FALSE}
+summary(loans$EstimatedEffectiveYield)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(loans, aes(EstimatedEffectiveYield)) + geom_histogram(bins=100)
+#Why so many rows with non-finite values?
+```
+
+You can see that this distribution mimics the distribution of APR's but moved slightly lower, with some tail to the left as well. Let's see what's causing negative estimated yield loans.
+
+
+```{r, echo=FALSE}
+loans %>%
+  filter(EstimatedEffectiveYield < 0) %>%
+  select(one_of(columns_of_interest)) %>%
+  summary
+```
+
+It seems that some of the EstimatedEffectiveYields have a negative value. I will explore this in the Bivariate Exploration. 
+
+## ProsperScore
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+summary(loans$ProsperScore)
+
+ggplot(loans, aes(ProsperScore)) + geom_bar()
+```
+
+Here you can see that ProsperScore is discrete, and potentially bimodal? Let's see what the scale is here.
+
+
+```{r, echo=FALSE}
+levels(loans$ProsperScore)
+```
+
+1 to 11? That's a strange scale for scoring. Maybe it's analogous to 0 to 10, but they don't want to make people feel bad by giving them 0's.
+
+## Listing Category
+
+In our dataset the Listing Categories are numeric, so I wrote a short function to convert them to their string values.
+
+```{r, echo=FALSE}
+listingToCharacter <- function(numeric.category){
+    listing.categories = c("Not Available", 
+                           "Debt Consolidation", 
+                           "Home Improvement", 
+                           "Business",
+                           "Personal Loan",
+                           "Student Use",
+                           "Auto",
+                           "Other",
+                           "Baby&Adoption",
+                           "Boat",
+                           "Cosmetic Procedure",
+                           "Engagement Ring",
+                           "Green Loans",
+                           "Household Expenses",
+                           "Large Purchases",
+                           "Medical/Dental",
+                           "Motorcycle",
+                           "RV",
+                           "Taxes",
+                           "Vacation",
+                           "Wedding Loans")
+    return(listing.categories[numeric.category + 1]) 
+}
+loans$ListingCategory <- listingToCharacter(loans$ListingCategory..numeric)
+```
+
+```{r, echo=FALSE}
+loans %>%
+  group_by(ListingCategory) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x=reorder(ListingCategory, desc(count)), y=count)) + 
+  geom_bar(stat="Identity") + 
+  xlab("ListingCategory") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+It looks like Debt Consolidation is the most popular reason to apply for a loan. 
+
+## Borrower State
+
+```{r, echo=FALSE}
+loans %>%
+  group_by(BorrowerState) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x=reorder(BorrowerState, desc(count)), y=count)) + 
+  geom_bar(stat="Identity") +
+  theme(text = element_text(size=8))
+#SOMEDAY:choropleth here?
+```
+
+This bar chart doesn't actually tell us much because we would have to weight these by the population of each state to see if there are real differences between them. In fact the first four are ordered exactly as they would be ordered by population.
+
+## Occupation
+
+
+```{r, echo=FALSE}
+loans %>% 
+group_by(Occupation) %>%
+filter(Occupation != "") %>%
+summarise(count = n()) %>%
+arrange(desc(count)) %>%
+filter(count > 3000)
+```
+
+Again, to see if any occupation actually had an undue number of loans we would have to get an estimate of how many people had each job in the population. Still, categorical variables like this are always interesting to look at since they put a human face on our data. 
+
+## Employment Status
+
+
+```{r, echo=FALSE}
+loans %>%
+group_by(EmploymentStatus) %>%
+summarise(count=n()) %>%
+arrange(desc(count))
+```
+
+Oh, so many questions here.  
+Are some of these categories subsets of other categories? (ie Does 'Employed = Full-time + Part-Time + Self Employed'? Let's try to find out.
+
+```{r, echo=FALSE}
+loans %>% 
+filter(EmploymentStatus %in% c('Self-employed','Full-time','Part-time')) %>%
+summarise(Self_Full_Or_Part_time = n())
+
+loans %>%
+filter(EmploymentStatus == 'Employed') %>%
+summarise(Employed = n())
+```
+
+Even with the addition of 'Other' and the NULLs the categories would not approach the number of employment. The way these categories are split up makes this variable less usefull.
+
+## Employment Status Duration
+
+
+```{r, echo=FALSE}
+summary(loans$EmploymentStatusDuration)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(loans, aes(EmploymentStatusDuration)) + geom_histogram()
+```
+
+
+```{r, echo=FALSE}
+summarise(loans, status.mean = mean(EmploymentStatusDuration, na.rm=TRUE)/12,
+         status.median = median(EmploymentStatusDuration, na.rm = TRUE)/12,
+         status.min = min(EmploymentStatusDuration, na.rm = TRUE)/12,
+         status.max = max(EmploymentStatusDuration, na.rm = TRUE)/12)
+```
+
+Looks like someone claims to have worked somewhere for almost 63 years! Maybe they're saying the've been employed for 63 years straight. This distribution is what we would expect to see, with the exception of the responders who sayed their duration was 0 months.
+
+## Credit Score
+
+Credit Range Upper and Lower. I would like to know the interval between the scores for each person.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#lots of na's here
+summary(loans$CreditScoreRangeUpper)
+```
+
+Interesting that there are Credit Scores under 300, which is the lowest Credit Score you can have.
+
+```{r, echo=FALSE}
+loans %>%
+select(CreditScoreRangeLower, CreditScoreRangeUpper) %>%
+mutate(interval =  CreditScoreRangeUpper - CreditScoreRangeLower) %>%
+summarise(int_mean = mean(interval, na.rm=TRUE),
+         int_median = median(interval, na.rm=TRUE),
+         int_max = max(interval, na.rm=TRUE),
+         int_min = min(interval, na.rm=TRUE))
+```
+
+Surprisingly the interval between CreditScoreRangeUpper and CreditScoreRangeLower isthe same for every loan, which saves me the trouble of constructing a variable to represent the most likely single score.
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(CreditScoreRangeUpper)) + 
+geom_histogram(binwidth=5) + 
+coord_cartesian(xlim=c(450,900))
+#Zooming in to take because Credit Score of 0 ruins scale of histogram.
+```
+
+The two bumps in credit score here remind me of the bumps in APR/Rate. Potentially there is correlation there - more people with the same credit score more people with the same rate. I wonder how Prosper aquires their score, is it just Fico or something more? Also it would be interesting to see what credit score distribution looks like in the general population versus in this dataset.
+
+## Lender Yield
+
+```{r, echo=FALSE}
+#Lender Yield
+summary(loans$LenderYield)
+```
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(LenderYield)) + geom_histogram(binwidth = .01)
+```
+
+The same spike that exists in the other Rate plots exists her at around 30%. Hard to know if this is a pricing strategy, or a rate that is popular for other reasons. It is roughly equivalent to a credit card. The max is slightly under the max borrower rate, so fees paid to Prosper must not be included in this number.
+
+## Income Range
+
+
+```{r, echo=FALSE}
+loans$IncomeRange <- factor(loans$IncomeRange, 
+                            levels = c('$0', 
+                                       '$1-24,999', 
+                                       '$25,000-49,999', 
+                                       '$50,000-74,999',
+                                       '$75,000-99,999',  
+                                       '$100,000+', 
+                                       'Not displayed', 
+                                       'Not employed'))
+```
+
+
+```{r, echo=FALSE}
+loans %>%
+  filter(!IncomeRange %in% c('Not displayed', 'Not employed')) %>%
+  ggplot(aes(IncomeRange)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Income Verifiable
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(IncomeVerifiable)) + geom_bar()
+```
+
+Looks like most loans go to people with verifiable incomes. 
+
+
+```{r, echo=FALSE}
+loans %>% 
+  filter(IncomeVerifiable == 'False') %>% 
+  filter(!IncomeRange %in% c('Not displayed', 'Not employed')) %>%
+  ggplot(aes(IncomeRange)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle('Non-verified IncomeRange distribution')
+```
+
+The distribution of IncomeRanges for non-verified incomes is slightly different from the verified incomes. Seems like $100k+ gets a bump upwards in particular.
+
+## Monthly Loan Payment
+
+
+```{r, echo=FALSE}
+summary(loans$MonthlyLoanPayment)
+```
+
+
+```{r, echo=FALSE}
+monthly_payment <- ggplot(loans, aes(MonthlyLoanPayment)) + 
+  geom_histogram(bins=100)
+
+monthly_payment
+```
+
+```{r}
+ggplot(loans, aes(x = 1, y = MonthlyLoanPayment)) +
+  geom_boxplot() + 
+  theme(aspect.ratio = 3/2)
+```
+
+
+Looks like there's a big outlier there with our max 2252. But our histogram makes it hard to see this. Let's zoom in on the bulk of the payments.
+
+
+```{r, echo=FALSE}
+monthly_payment + coord_cartesian(c(0,1250))
+```
+
+After 200 there is a sharp drop off in monthly payments. Perhaps there is some sort of sales tactic there, or a correlation with a common loan amount.
+
+## Loan Original Amount
+
+```{r, echo=FALSE}
+summary(loans$LoanOriginalAmount)
+ggplot(loans, aes(LoanOriginalAmount)) + geom_histogram(bins=100)
+```
+
+We can see that Loan Amounts tend to be in whole numbers. Let's see the most common loan amounts.
+
+
+```{r, echo=FALSE}
+loans %>%
+  group_by(LoanOriginalAmount) %>%
+  summarise(count = n()) %>%
+  filter(count > 3000) %>%
+  arrange(desc(count))
+```
+
+```{r}
+ggplot(loans, aes(x = 1, y = LoanOriginalAmount)) +
+  geom_boxplot(alpha=.5) +
+  theme(aspect.ratio = 3/2)
+```
+
+Lots of outliers here at the upper range of Loan Original Amount. It makes sense that there would be less people with the high incomes that would qualify them for these large loans.
+
+## Percent Funded
+
+```{r, echo=FALSE}
+summary(loans$PercentFunded)
+
+ggplot(loans, aes(PercentFunded)) + 
+  geom_histogram(bins=100) 
+```
+
+OK, so it looks like the vast percentage were 100% funded (or they probably wouldn't be in this dataset!) Let's take a closer look at those that weren't.  
+Also, it looks like minimally 70% of the loans in the set were funded. Maybe that is Prosper's cutoff?
+
+
+```{r, echo=FALSE}
+loans %>%
+  filter(PercentFunded < 1) %>%
+  ggplot(aes(PercentFunded)) + 
+  geom_histogram(bins=30)
+```
+
+The only thing I see for sure here is that of the loans that do not get 100% funded, many are 70% funded, and the amount at each precentage from 70-99% trends downward until it hits 100%, where most of the loans reside. This could be interpreted as the higher your funding percentage the more likely you are to be funded 100%.
+
+
+```{r, echo=FALSE}
+loans %>%
+  filter(PercentFunded < 1) %>%
+  ggplot(aes(PercentFunded)) + 
+  geom_density()
+```
+
+## Number of Investors
+
+```{r, echo=FALSE}
+summary(loans$Investors)
+```
+
+Should be related to the size of the loan.
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(Investors)) + 
+  geom_histogram(bins=100)
+```
+
+Wow, on a a platform that lets you pool your risk with other investors, a vast majority of loans still only have 1 investor.
+
+
+
+```{r, echo=FALSE}
+loans %>%
+  group_by(Investors) %>%
+  summarise(count = n()) %>%
+  filter(Investors <= 10)
+```
+
+# Univariate Analysis
+
+### What is the structure of your dataset?  
+
+There are 112,239 unique loans in this dataset, with 81 features about both the loans (APR, Term, Status) and the Borrower (Occupation, Income Range, Credit Score). 
+
+### What is/are the main feature(s) of interest in your dataset?  
+
+The main features of interest here are:  
+* What makes someone credit-worthy? / What factors determine how much you pay to borrow money? This is reflected in BorrowerApr.
+* What determines how much you can borrow? (OriginalLoanAmount)
+* What loans are likely to go bad? (LoanStatus)
+* and, for me, 'What can we learn about the people these loans were made to?' (Occupation, State, etc)
+
+
+### What other features in the dataset do you think will help support your investigation into your feature(s) of interest?
+
+I think Credit Score and Income range are likely to be large factors in credit-worthyness, and how much you can borrow. Employment, ProsperScore, and Credit Score (which is already an aggregate of many credit-related data points) should be good indicators for rate. And variables like State, Occupation and Employment Duration will let me know more about the borrowers.
+
+### Did you create any new variables from existing variables in the dataset?
+
+* simple.LoanStatus - A simplified LoanStatus column called that combines all the 'Past Due' Loans into one factor, eliminates the small amount of cancelled and final payment loans. 
+* ListingCategory - String representation of ListingCategory..numeric.
+* For the bi/multi variate exploration I will probably simplify the factors of Employment.
+
+
+### Of the features you investigated, were there any unusual distributions? Did you perform any operations on the data to tidy, adjust, or change the form of the data? If so, why did you do this?  
+
+The biggest cleaning opporation I had to undertake was eliminating all of the duplicate loans that shared unique identifiers (ListingKey) and were identical except for Prosper Score.  
+
+I will be filtering out the loans with CreditScoreRangeUpper '19' as they seem to represent a credit-not-available value.
+
+# Bivariate Plots Section
+
+## Correlations
+
+```{r}
+loans %>%
+  select(one_of(columns_of_interest)) %>%
+  select(-ListingCategory..numeric.) %>%
+  ggcorr(hjust = .95, size=5, color = "black", layout.exp = 2) 
+
+```
+
+This is a nice preview of things to come. Rates to the borrower and yield for the lender are positively correlated. Both Yield and Rate have a slight negative correlation to variables that provide credit worthiness, such as Credit Score and Employment Status Duration. And, Prosper Score seems to have very little correlation with the rest of the variables.
+
+## Proportion per Term by Loan Status
+
+```{r, echo=FALSE}
+loans %>%
+  filter(!IncomeRange %in% c('Not displayed', 'Not employed')) %>%
+  filter(!is.na(IncomeRange)) %>%
+  group_by(Term, IncomeRange) %>%
+  summarise(num_loans = n()) %>%
+  mutate(frequency = num_loans / sum(num_loans)) %>%
+  ggplot(aes(x=Term, y=frequency, fill=IncomeRange)) + 
+  geom_bar(stat = "identity", position="dodge") +
+  scale_fill_brewer(palette = "Greens")
+```
+
+Seems like there are different patterns for different Income Ranges. For \$1-24,999 and \$25,000-49,999 the preference seems to be for 3 year term loans.  For \$50,000-74,999 long term 5-year loans are more popular. In the \$100k and above range, short term one-year loans are the most popular, followed by 5 year-loans.
+
+```{r, echo=FALSE}
+loans %>% 
+  filter(!simple.LoanStatus == 'Cancelled') %>%
+  group_by(simple.LoanStatus, Term) %>%
+  summarise(number_loans = n()) %>%
+  mutate(frequency = number_loans / sum(number_loans)) %>%
+  ggplot(aes(x=Term, y=frequency)) + 
+  geom_bar(stat="Identity") + 
+  facet_wrap(~simple.LoanStatus)
+```
+
+Here we can see that 3-year loans are more likely to default than others. 
+
+## BorrowerApr by Term
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(x=Term,y=BorrowerAPR, group=Term)) + 
+  geom_boxplot()
+```
+
+Median APR is practically lat over all three terms. However, longest term loans tend to be in a tighter, lower APR range.
+
+## Estimated Effective Yield by Term
+
+
+```{r, echo=FALSE}
+ggplot(loans, aes(x=Term,y=EstimatedEffectiveYield,group=Term)) + 
+  geom_boxplot()
+```
+
+It makes intuitive sense that 5-year loans would have a higher yield, since they have longer to collect interest. We know that 3-year loans have the largest range because there are more loans in this category, and we've already explored the negative yield, closed-out loans. 
+
+## Estimated Effective Yield and Loan Status
+
+In our univariate plots we noticed that there are some negative expected yields. Let's take a deeper look at that. 
+
+```{r, echo=FALSE}
+loans %>%
+filter(EstimatedEffectiveYield < 0) %>%
+ggplot(aes(LoanStatus, EstimatedEffectiveYield, group=LoanStatus)) + 
+  geom_boxplot()
+```
+
+Looks like all of the 184 loans that have a negative EstimatedEffectiveYield are not current, but have either been completed, chargedoff, or defaulted. This probably represents either the loss incurred from the loans that where completed ahead of schedule, or had to be taken as a loss. It's not really an 'estimate' for any of these statuses because the loss has been realized. 
+
+## Original Loan Amount by Term
+
+```{r, echo=FALSE}
+ggplot(loans, aes(x=Term,y=LoanOriginalAmount,group=Term)) + 
+  geom_boxplot()
+```
+
+Seems that in general the longer the term the higher the median amount of the loan. Interesting to note the hard ceiling of 35k. 
+
+
+```{r, echo=FALSE}
+#Checking my eyes on that: 
+max(loans$LoanOriginalAmount)
+```
+
+## Borrower APR by Loan Status
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(loans, aes(x=LoanStatus,y=BorrowerAPR,group=LoanStatus)) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Completed and Current loans tend to have a lower APR than loans that are Past Due or that have Defaulted. A hopeful thing I notice here is that Past Due > 120 Days has a higher median APR than the short past due categories, so perhaps only the higher APR loans of those groups will default. Unfortunately, they have roughly the same APR as the chargedoff loans, so maybe things aren't that much sunnier.
+
+## Listing Category and Loan Status
+
+```{r, echo=FALSE}
+#Are there listing Categories that are more likely to default/go past due/etc?
+loans %>% 
+  select(ListingCategory, simple.LoanStatus) %>%
+  filter(simple.LoanStatus != 'Cancelled') %>%
+  filter(simple.LoanStatus != 'FinalPaymentInProgress') %>%
+  group_by(ListingCategory, simple.LoanStatus) %>% 
+  summarise(rows = n()) %>%
+  mutate(frequency = rows / sum(rows),
+         bad_outcome = ifelse(simple.LoanStatus %in% c('Defaulted', 
+                                                       'Chargedoff', 
+                                                       'Past Due'),
+                              'bad', 
+                              'good')) %>% 
+  ggplot(aes(x=simple.LoanStatus, y=frequency)) + 
+  geom_bar(stat="Identity", aes(fill=bad_outcome)) + 
+  scale_fill_manual(values = c("dark red", "grey")) +
+  facet_wrap(~ListingCategory) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#how to color certain bars from:
+#http://sharpsightlabs.com/blog/shipping-analysis-r-data-visualization/
+```
+
+So there is a lot we can't see in these charts, but mostly we're mostly checking if there is any Listing Category that consistently leads to bad outcomes. It seems that Personal Loan, Not Available, and Student use result in a higher amount of bad outcome loans. Loans for Baby&Adoption and Wedding Loans tend to stay current.
+
+## LoanStatus and IncomeRange
+
+```{r, echo=FALSE}
+#####Loan Status  vs IncomeRange 
+loans %>%
+  group_by(IncomeRange, simple.LoanStatus) %>%
+  filter(!simple.LoanStatus == 'Cancelled') %>%
+  filter(!simple.LoanStatus == 'FinalPaymentInProgress') %>%
+  filter(!IncomeRange == 'Not displayed') %>%
+  summarise(rows = n()) %>%
+  mutate(frequency = rows / sum(rows)) %>%
+  ggplot(aes(x=IncomeRange, 
+           y=frequency, 
+           fill=simple.LoanStatus)) + 
+  geom_bar(stat="identity", position="dodge") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Here we see that people in the $0 and Not employed income ranges have a higher proportion of Chargedoff, Defaulted, and PastDue Loans. Charge offs and defaults decrease with higher IncomeRange, though Past Due tends to stay flat.  
+
+For this graph I eliminated 'cancelled' and 'final payment in progress' loans because they are such a small part of the mix. It is also important to note that Completed, Chargedoff and Defaulted loans should grow with the amount of time included with this snapshot. If we had 20 years of loan data they would be many times the amount of currently active loans.
+
+## Borrower APR and Credit Score 
+
+```{r, echo=FALSE}
+#Borrower APR vs Credit Score Range(s)
+loans %>% 
+  filter(CreditScoreRangeUpper >= 300) %>%
+  ggplot(aes(CreditScoreRangeUpper,BorrowerAPR)) + 
+  geom_jitter(alpha = 1/30)
+```
+
+This is some of what we would expect to see. The higher your Credit Score the lower your APR, in general.  
+
+It seems that even if you have a lower credit score you can get a loan at the high interest rage of .3 or .375. I wonder if the high interest loans made to borrowers with a high credit score are low amounts? I'll explore this in the multivariate section.
+
+We see some lines at APR's that were present in our overall BorrowerAPR distribution. Especially that line at 30%. I wonder if there is legal lending limits or psycological pricing is at work there.  
+
+Looks like there is something that causes some people with no credit to be listed with a Lower Credit Score Range of 0 and an Upper of 19. It's interesting to me that loans can be made to these types of users. Might be worth exploring this population further.
+
+## Borrower APR and Listing Category
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Borrower APR vs Listing Category
+#working
+loans %>%
+  ggplot(aes(y=BorrowerAPR, x=ListingCategory, group=ListingCategory)) + 
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Mean Borrower APR and Occupation
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Borrower APR vs Occupation
+loans %>%
+  group_by(Occupation) %>%
+  summarise(average_apr = mean(BorrowerAPR)) %>%
+  filter(average_apr < .20) %>%
+  ggplot(aes(x=reorder(Occupation,desc(average_apr)), y=average_apr)) + 
+  geom_bar(stat = "Identity") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Occupation') + 
+  ggtitle('Occupations with mean APR less than 20%')
+```
+
+On a superficial level it seems that highly paid professions get lower average APR's. But that just reiterates an obvious relationship between high income, good credit, and the ability to repay loans. I did smile when I saw that judges in particular have a low average apr. On further investigation there are 22 people who claimed Judge as their occupation in our dataset.
+
+
+```{r, echo=FALSE}
+loans %>% 
+  filter(Occupation == 'Judge') %>%
+  summarise(Judge_Count=n())
+```
+
+## Borrower APR vs Employment Duration 
+```{r, echo=FALSE}
+#Borrower APR vs Employment Duration 
+loans %>% 
+  group_by(EmploymentStatus) %>%
+  filter(!EmploymentStatus == '') %>%
+  ggplot(aes(reorder(EmploymentStatus, BorrowerAPR, median), BorrowerAPR)) +
+  geom_boxplot() +
+  xlab('Employment Status')
+```
+
+It seems like being 'Not Employed' results in a higher mean APR. 
+
+## Employment Status Duration and BorrowerApr
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#If employed, does the length of your employment effect borrower apr?
+#Normal with spikes? Is there a way to check how normal a distribution is?
+loans %>%
+  filter(EmploymentStatus %in% c('Self-employed',
+                                 'Employed',
+                                 'Full-time',
+                                 'Part-time')) %>%
+  ggplot(aes(x=EmploymentStatusDuration, y=BorrowerAPR, alpha=1/300)) + 
+  geom_point() +
+  geom_smooth(method="lm")
+```
+
+It doesnt seem that duration of employment status for people who are employed has much of an effect on Borrower APR.
+
+## Prosper Score and Borrower APR
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Prosper Score vs Borrower APR
+loans %>%
+  ggplot(aes(x=ProsperScore, y=BorrowerAPR, group=ProsperScore)) + 
+  geom_boxplot()
+```
+
+ProsperScore seems to be the best indicator for APR's that we've explored - of course ProsperScore is a variable created by Prosper out of all the other variables they care about, so it's completely surprising. You can see that in each of the scores there are outliers, so ProsperScore isn't a total predictor, and there are probably other variables, such as Loan Amount, that will change the APR even if you have a certain score. 
+
+
+```{r, echo=FALSE}
+#group employment status type
+employed <- c('Self-employed', 'Employed', 'Full-time')
+not_answered <- c('Not available', 'Other')
+
+loans %>%
+  filter(!EmploymentStatus == "" ) %>%
+  filter(!EmploymentStatus %in% not_answered) %>%
+  mutate(EmploymentStatus.simple = ifelse(EmploymentStatus %in% employed, 
+                                          "Employed", 
+                                          as.character(EmploymentStatus))) %>%
+  group_by(EmploymentStatus.simple) %>%
+  summarise(n())
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#ProsperScore vs Credit Range
+loans %>%
+  ggplot(aes(x = ProsperScore, y = CreditScoreRangeUpper)) +
+  geom_jitter(alpha=.03) +
+  geom_smooth(method="lm") +
+  coord_cartesian(ylim = c(550, 900))
+```
+
+I like this scatter plot with jitter because you can both see that there aren't many loans in the extremes of either range, and that there is a linear, positive relationship between Credit Score and Prosper Score, which is what we would expect. Distractingly, loans that do not have a Prosper Score have a wide range of Credit Scores. 
+
+
+Listing Category and Borrower State
+```{r, echo=FALSE}
+#Listing Category vs Borrower State
+loans %>%
+  group_by(BorrowerState, ListingCategory) %>%
+  summarise(count = n()) %>%
+  filter(count == max(count))
+```
+
+I explored the relationship between state and Listing Category, but the overwhelming majority of loans are for Debt Consolidation or have a category of 'Not Available' so there was nothing surprising here.
+
+## Listing Category and Credit Score
+
+```{r, echo=FALSE}
+#Listing Category vs Credit Score
+#Do people with low credit scores list for something in particular?
+loans %>%
+  select(CreditScoreRangeUpper, ListingCategory) %>%
+  filter(CreditScoreRangeUpper >= 300) %>%
+  mutate(bin = ntile(CreditScoreRangeUpper, 5)) %>%
+  group_by(bin, ListingCategory) %>%
+  summarise(count = n(),
+            minCredit = min(CreditScoreRangeUpper),     
+            maxCredit = max(CreditScoreRangeUpper)) %>%
+  filter(count == max(count)) 
+```
+Pretty all income ranges are listing for Debt Consolidation, or the info is unavailable. 
+
+
+## Borrower State and most common Income Range
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Borrower State Income Range (most common)
+loans %>%
+  select(BorrowerState, IncomeRange) %>%
+  group_by(BorrowerState, IncomeRange) %>%
+  summarise(count = n()) %>%
+  filter(count == max(count))
+#better represented as choropleth?
+```
+
+## Credit Score and Income Range
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+loans %>%
+  select(CreditScoreRangeUpper, IncomeRange) %>%
+  ggplot(aes(x = IncomeRange, y = CreditScoreRangeUpper)) + 
+  geom_jitter(alpha=.1) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Interesting to see that all our out of range Credit Scores are in the 'Not Displayed' Income Range. There seems to be a positive correlation between haveing a higher Income Range and having a high credit score, but we can also see that most of the loans have been made to people with a Credit Score centered around 700, with a floor at about 525 (except for Not Displayed Income Range) 
+
+## Income Range and Monthly Loan Payment
+```{r, echo=FALSE}
+#Income Range by Monthly Loan Payment
+loans %>%
+  ggplot(aes(x = IncomeRange, y = MonthlyLoanPayment)) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+In general, if you have income, the higher your income range the higher your monthly loan payment can be. 
+
+## Loan Original Amount and Income Range
+```{r, echo=FALSE}
+#Income Range by Loan Original Amount
+loans %>%
+  ggplot(aes(x = IncomeRange, y = LoanOriginalAmount)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The higher the income, the higher the median Loan Amount.
+
+# Bivariate Analysis.
+
+### How did the feature(s) of interest vary with other features in the dataset?
+
+#### APR 
+* Loan Terms don't change APR much, but longer term loans tend to be in a tighter, lower APR range.
+
+* Having a higher Credit Score results in a lower APR in general, with some interesting reoccuring interest rates.
+
+* Having a high credit score and high Income Range are correlated.
+
+* Being unemployed correlates with having a higher APR, though employment status being 'Not Available' had the lowest mean apr.
+
+* ProsperScore good APR indicator. but indicator of inditcators.
+
+#### Loan Amount
+* The longer the loan term the higher the median amount of loans - with the maximum loan amount being 35k.
+
+* Higher Income Ranges also tend to have higher monthly payments, probably because they tend to be taking out larger loans.
+
+#### Possibility of bad outcome
+* Loan category does seem to have an effect on whether or not loans go bad (chargeoff, default). 
+
+* Chargeoffs and defaults decrease with higher IncomeRange, though the amount of Past Due loans remains relatively flat.
+
+
+### Did you observe any interesting relationships between the other features (not the main feature(s) of interest)?
+
+* Professionals tend to have low APRs with Judges having the lowest.
+* The reasons for wanting loans remains constant across states.
+* The top occupation in each state tends to vary.
+* DC, treated as its own state, has the highest most frequent income range (100k+). 
+
+### What was the strongest relationship you found?
+
+The relationship between ProsperScore and APR is very strong, though that is to be expected since ProsperScore is an amalgam of all the variables Prosper finds to be import, and is probably part of the process of assigning an APR. 
+
+
+# Multivariate Plots Section
+
+```{r, fig.width=10, echo=FALSE}
+#LoanOriginalAmount + Credit Score + Income Range
+loans %>%
+  filter(CreditScoreRangeUpper >= 300) %>%
+  filter(IncomeRange != 'Not displayed') %>%
+  ggplot(aes(x = CreditScoreRangeUpper, y = LoanOriginalAmount, color = IncomeRange)) + 
+  geom_jitter(size=.95, alpha=.25) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  theme(panel.background = element_rect("grey25")) +
+  scale_color_brewer() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#loans %>% filter(IncomeRange != 'Not displayed') %>% ggplot(aes(x=CreditScoreRangeLower, y=LoanOriginalAmount)) + geom_point()
+```
+
+There is some overplotting here, but there is also a lot of information. We see that really large loans are only made to people that are in the \$100,000+ Income Range. This makes sense not just because it's the largest income but because as a category it extends to every possible Income Range above it. For people with an IncomeRange below 100k it seems that regardless of credit score their maximum loan amount is $25k. Also, lines emerge for Original Loan Amounts at easily chosen amounts - 10k, 15k, 20k. It seems that for most borrowers 25k is a hard ceiling unless you have a high income. It seems that for income ranges above \$25k the relationship between Original Loan Amount and Credit Score is relatively constant amount income ranges. Below \$25k a year, loans in the \$0 bin have a loan amount that increases more quickly than others given a higher credit score, and the 'Not employed' bin experiences a steeper increase in Loan Amount than people in the \$1-24,999 bin across the same Credit Scores. 
+
+
+```{r, fig.width=10, echo=FALSE}
+#Borrower Apr + CreditScore range w. Loan amount plot
+loans %>% 
+  filter(CreditScoreRangeUpper >= 300) %>%
+  ggplot(aes(CreditScoreRangeUpper, BorrowerAPR, color = LoanOriginalAmount)) + 
+  geom_jitter(size=.85)
+```
+
+My intuition was right about lower Original Loan Amounts resulting in high APRs. From this chart we can see that the best APRs seem to go to people with hgh credit scores, borrowing medium amounts of money.
+
+```{r, fig.width=10, echo=FALSE}
+#Something to talk about outcome. IncomeRange, OriginalAmount
+loans %>%
+  filter(!simple.LoanStatus == 'Cancelled') %>% 
+  mutate(outcome = ifelse(simple.LoanStatus %in% c('Past Due',
+                                                   'Defaulted', 
+                                                   'Chargedoff'), 
+                          'bad', 
+                          'good')) %>% 
+  ggplot(aes(IncomeRange, LoanOriginalAmount, fill=outcome)) + 
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+It seems that, for people with income, larger loans amount are more likely to stay current. This surprises me, but may show that, in general, if Prosper is willing to loan you a lot of money they are very certain you will not become delinquent.  
+
+
+```{r, fig.width=10, echo=FALSE}
+#Something to talk about outcome. IncomeRange, OriginalAmount
+loans %>%
+  filter(!simple.LoanStatus == 'Cancelled') %>% 
+  mutate(outcome = ifelse(simple.LoanStatus %in% c('Past Due',
+                                                   'Defaulted',
+                                                   'Chargedoff'),
+                          'bad',
+                          'good')) %>% 
+  ggplot(aes(LoanOriginalAmount, MonthlyLoanPayment, color=outcome)) + 
+  geom_point(size =.85, alpha = .7) 
+```
+
+Here, each band is a term, and you can see that it tends to be the Loans with higher monthly payments within their term that have bad outcomes. This is deffinitely not causality, those loans had higher APR's *because* the borrowers were deamed riskier.
+
+### Talk about some of the relationships you observed in this part of the investigation. Were there features that strengthened each other in terms of looking at your feature(s) of interest?
+
+Seeing Loan Amount, Credit Score, and Income range together strengthed what I knew about their relationships and highlighted the role Income Range plays, especially in large loans.
+
+By combining APR, Credit Score and Loan Amount we can see that, in general, larger loans have lower APRs they don't have the lowest, and that the largest loans are centered in a credit score of 750-850 and an APR between 10 and 20%.
+
+Outcome by Income Range and Loan Amount was surprising - but reinforces the fact that this dataset is of loans that were deemed worthy to be made.
+
+### Were there any interesting or surprising interactions between features?
+
+Deffinitely the last boxplot that shows Larger Loans being paradoxically more likely to have good outcomes was surprising to me, since larger loans are more difficult to pay back - but ability to repay is related to income and other factors. 
+
+It is also important to remember that this is a set of loans that *were* made. What we don't see is loans that fell outside of the parameters of Prosper's lending. All of these loans were deemed by lenders to be of acceptable risk. 
+
+# Final Plots and Summary
+
+### Plot One
+```{r, message=FALSE, warning=FALSE}
+library(ggthemes)
+```
+
+```{r, message=FALSE, warning=FALSE}
+#BorrowerARP + Estimated Effective Yield
+loans %>%
+  ggplot(aes(BorrowerRate)) + 
+  geom_density(size=1,aes(color="Borrower Rate")) +
+  geom_density(aes(EstimatedEffectiveYield, 
+                   color="Estimated Effective Yield" ), 
+               size = 1, 
+               linetype="dotted") +
+  coord_cartesian(c(0, .5)) +
+  ggtitle('Borrower Rate and Estimated Effective Yield') +
+  xlab("Rate Percentage") +
+  scale_color_manual(name='', 
+                     values=c("Borrower Rate"="chartreuse4", 
+                              "Estimated Effective Yield"="dodgerblue"),
+                     guide='legend') +
+  guides(color = guide_legend(override.aes = list(linetype=c(1,4)))) +
+  theme_hc()
+#with help from: http://zevross.com/blog/2014/08/04/beautiful-plotting-in-r-a-ggplot2-cheatsheet-3/#working-with-the-legend
+```
+
+### Description One  
+
+One of my first stops with this dataset was to look at the distribution of rates for borrowers, and the potential yields for Lenders. When looked at together Estimated Effective Yield has almost the same distribution, shifted lower on the scale of percentage rate. This make sense, because the yield will be lower than borrower is paying, and since the yield is estimated it is a little smoother than the actual borrower rate distribution of all of the loans in the dataset. 
+
+### Plot Two
+```{r}
+#Number of Investors
+ggplot(loans, aes(Investors)) + geom_histogram(bins=100) +
+  coord_cartesian(c(0,500)) +
+  scale_x_continuous(name = 'Number of Investors',
+                     breaks = c(1, 100, 200, 300, 400, 500)) +
+  ylab('Count') +
+  ggtitle('Frequency of Number of Investors') + 
+  theme_hc()
+```
+
+### Description Two  
+
+One of my most surprising findings was that, on a platform for P2P lending, a 31% of the loans are originated by just one investor. If it was small, individual investors in these loans looking for maximum diversification I think there would be a mean around the average size of a loan divided by the minimum investment per loan ($25). It's possible that institutional investors account for the large amount of these solo-investor loans. There were a lot of articles several years ago about how large investors, like hedge funds and banks, were getting into the P2P space, and there are even bonds that are bonds backed by P2P loans. In fact, I believe the prefered nomenclature is now 'Marketplace Lending', not P2P.   
+
+```{r}
+num_one_invest <- loans %>%
+  group_by(Investors) %>%
+  summarise(count = n()) %>%
+  filter(Investors == 1) %>%
+  summarise(sum_count = sum(count))
+
+num_more_invest <- loans %>%
+  group_by(Investors) %>%
+  summarise(count = n()) %>%
+  filter(Investors != 1) %>%
+  summarise(sum_count = sum(count))
+
+num_one_invest / num_more_invest
+```
+
+### Plot Three
+```{r}
+#add footnotes
+#Something to talk about outcome. IncomeRange, OriginalAmount
+loans %>%
+  filter(!simple.LoanStatus == 'Cancelled') %>%
+  mutate(Outcome = ifelse(simple.LoanStatus %in% c('Past Due', 
+                                                   'Defaulted',
+                                                   'Chargedoff'),
+                          'bad',
+                          'good')) %>% 
+  ggplot(aes(IncomeRange, LoanOriginalAmount, fill = Outcome)) +  
+  geom_boxplot() +  
+  ggtitle('Outcome of Loans by Income Range of Borrower and Loan Amount') +
+  ylab('Original Loan Amount in Dollars') +
+  xlab('Income Range') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Description Three
+
+I included this plot because it both surprised me, and illustrated the strength of the Income variable in this dataset. It suggests that, for people with income, larger loans are more likely to stay current, and avoid becoming Past Due, Defaulted or Charged Off. My intuition is that Prosper is more willing to make larger loans to people who are more capable of paying them back. Also, our 'Income Range' variable includes some large buckets, and we can't discount the fact that making \$1 is very different than making \$24,999 and that people making \$75k are better off that people making \$50k, but in both of these cases the loans are in the same Income Range bucket.
+
+------
+# Reflection
+
+Exploring this complex dataset was very enjoyable. It was hard to *not* explore each of the 81 variables. The data often had surprising quirks, like the duplicate listing keys and the 0-19 Credit Score Range, but mostly it told the story of how Prosper vets high quality borrowers. 
+
+I think a lot about the data for the loans that *were not* made and are not present. In many ways this data set is a picture of what lenders consider acceptable risk for a positive expected outcome. That being said, these loans are made in a pretty wide band, and I felt like I was able to tease out some of the levers and filters that were used to make that descision.
+
+Initially, I struggled with the switch to R from python, then I got to know (and love) dplyr and the rest of the tidyverse. Once I got the hang of piping commands and ggplot2 I felt like I could explore without worrying too much about syntax, which felt very freeing and helped with the exploratory nature of this project.
+
+I made the mistake of begining this project in a jupyter notebook, thinking it would be easy to convert it to R Markdown later. I was very wrong about that. Also, some of the quirks of knitting have taken a lot of my time - like trying to get my tables to be readable, but I think the kable package provides a workable solution, and some of the tables turned out to be unnecessary.
+
+Overall, I was surprised how Credit Score was not the main indicator of a loan's attributes. It was a big one, but in thinking through the data I guessed that it would be heavily weighted, since it is itself composed of a large number of historically tracked data points. Aside from this, the relationship between loan amount and outcome was unanticipated. However, it was fairly easy to see things from the lender's point of view so many of the relationships were predictable. 
+
+I think in the future for this dataset I would like to re-create the model Prosper uses to assign its 'Prosper Score'. Since we have the data, and the labels, I should be able to create a reasonable fascimile. I also would like to eventually examine at all of the variables. One of the reasons that this project took me so long is that I wanted to thoroughly examine every part of this data. I think using techniques like regression I could identify other variables worth exploring.
+
+Overall, this project has made me an R enthusiast and gave me a better understanding of how to crack open a dataset and begin the process of finding all the insights it has to offer.
